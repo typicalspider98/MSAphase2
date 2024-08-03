@@ -6,10 +6,10 @@ namespace backend.Models
     {
         [Required]
         [RegularExpression("^[a-zA-Z0-9]*$", ErrorMessage = "Username is invalid,,,, can only contain letters or digits.")]
-        public string UserName { get; set; }
+        public string UserName { get; set; } = string.Empty;
 
         [Required]
         [DataType(DataType.Password)]
-        public string Password { get; set; }
+        public string Password { get; set; } = string.Empty;
     }
 }

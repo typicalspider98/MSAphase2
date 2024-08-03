@@ -3,6 +3,7 @@ using backend.Repositories;
 using backend.Services;
 using backend.Data;
 using backend.Controllers;
+using backend.Hubs; 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
 var builder = WebApplication.CreateBuilder(args);
@@ -24,6 +25,11 @@ builder.Services.AddIdentity<User, IdentityRole>(options =>
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddDefaultTokenProviders();
 
+//SignalR
+builder.Services.AddSignalR();
+builder.Services.AddScoped<IFileRepository, FileRepository>();
+
+
 // Configure Repositories
 builder.Services.AddScoped<IFileRepository, FileRepository>();
 
@@ -44,6 +50,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+
 var app = builder.Build();
 
 // Enable CORS
@@ -55,11 +62,17 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+else
+{
+    app.UseExceptionHandler("/Home/Error");
+    app.UseHsts();
+}
 
 app.UseHttpsRedirection();
 app.UseAuthentication(); // Add this line
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<FileHub>("/fileHub");
 
 app.Run();

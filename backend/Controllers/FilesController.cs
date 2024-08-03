@@ -1,11 +1,15 @@
 using backend.Models;
 using backend.Repositories;
+using backend.Hubs; 
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using FileModel = backend.Models.File;
+using Microsoft.AspNetCore.Http;
+using System.Linq;
 
 
 namespace backend.Controllers
@@ -15,10 +19,12 @@ namespace backend.Controllers
     public class FilesController : ControllerBase
     {
         private readonly IFileRepository _fileRepository;
+        private readonly IHubContext<FileHub> _hubContext;
 
-        public FilesController(IFileRepository fileRepository)
+        public FilesController(IFileRepository fileRepository, IHubContext<FileHub> hubContext)
         {
             _fileRepository = fileRepository;
+            _hubContext = hubContext;
         }
 
         [HttpPost("upload")]
@@ -27,25 +33,52 @@ namespace backend.Controllers
             if (file == null || file.Length == 0)
                 return BadRequest("Invalid file.");
 
-            var filePath = Path.Combine("uploads", Guid.NewGuid() + Path.GetExtension(file.FileName));
-
-            using (var stream = new FileStream(filePath, FileMode.Create))
+            var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "uploads");
+            if (!Directory.Exists(uploadsFolder))
             {
-                await file.CopyToAsync(stream);
+                Directory.CreateDirectory(uploadsFolder);
             }
-
-            var fileEntity = new FileModel
+            // Generate a unique file name to ensure security
+            var fileName = Guid.NewGuid() + Path.GetExtension(file.FileName);
+            var filePath = Path.Combine(uploadsFolder, fileName);
+            //var filePath = Path.Combine(uploadsFolder, Guid.NewGuid() + Path.GetExtension(file.FileName));
+            //var filePath = Path.Combine("uploads", Guid.NewGuid() + Path.GetExtension(file.FileName));
+            try
             {
-                FileName = file.FileName,
-                FilePath = filePath,
-                UploadedAt = DateTime.Now,
-                Size = file.Length,
-                Uploader = User.Identity.Name // 假设已经实现身份验证
-            };
+                using (var stream = new FileStream(filePath, FileMode.Create))
+                {
+                    await file.CopyToAsync(stream);
+                }
 
-            await _fileRepository.AddFileAsync(fileEntity);
+                var fileEntity = new FileModel
+                {
+                    FileName = file.FileName,
+                    FilePath = filePath,
+                    UploadedAt = DateTime.UtcNow,
+                    //UploadedAt = DateTime.Now,
+                    Size = file.Length,
+                    Uploader = User.Identity.Name?? "Anonymous" // Handling unauthenticated users
+                };
 
-            return Ok(new { fileId = fileEntity.Id });
+                await _fileRepository.AddFileAsync(fileEntity);
+
+                // Notify clients using SignalR
+                var hubContext = HttpContext.RequestServices.GetService<IHubContext<FileHub>>();
+                if (hubContext == null)
+                {
+                    // Handling the case where hubContext is null
+                    return StatusCode(500, "Internal server error: Unable to get hub context.");
+                }
+                await _hubContext.Clients.All.SendAsync("FileUploaded", fileEntity.FileName);
+
+                return Ok(new { fileId = fileEntity.Id });
+            }
+            catch (Exception ex)
+            {
+                // output err log
+                Console.WriteLine($"Error uploading file: {ex.Message}");
+                return StatusCode(500, "Internal server error during file upload.");
+            }
         }
 
         [HttpGet("{id}")]
@@ -54,16 +87,26 @@ namespace backend.Controllers
             var file = await _fileRepository.GetFileByIdAsync(id);
             if (file == null)
                 return NotFound();
-
-            var memory = new MemoryStream();
-            using (var stream = new FileStream(file.FilePath, FileMode.Open))
+            // check
+            if (!System.IO.File.Exists(file.FilePath))
+                return NotFound("File not found on server.");
+            try
             {
-                await stream.CopyToAsync(memory);
-            }
-            memory.Position = 0;
+                var memory = new MemoryStream();
+                using (var stream = new FileStream(file.FilePath, FileMode.Open))
+                {
+                    await stream.CopyToAsync(memory);
+                }
+                memory.Position = 0;
 
-            //return File(memory, "application/octet-stream", file.FileName);
-            return File(memory, "application/octet-stream", file?.FileName ?? "unknown");
+                //return File(memory, "application/octet-stream", file.FileName);
+                return File(memory, "application/octet-stream", file?.FileName ?? "unknown");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error downloading file: {ex.Message}");
+                return StatusCode(500, "Internal server error during file download.");
+            }
         }
 
         [HttpDelete("{id}")]
@@ -72,18 +115,40 @@ namespace backend.Controllers
             var file = await _fileRepository.GetFileByIdAsync(id);
             if (file == null)
                 return NotFound();
+            try
+            {
+                System.IO.File.Delete(file.FilePath);
+                await _fileRepository.DeleteFileAsync(id);
+                Console.WriteLine($"File with ID {id} deleted by {User.Identity.Name}.");
 
-            System.IO.File.Delete(file.FilePath);
-            await _fileRepository.DeleteFileAsync(id);
-
-            return NoContent();
+                // Notify clients using SignalR
+                await _hubContext.Clients.All.SendAsync("FileDeleted", file.FileName);
+                return NoContent();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error deleting file: {ex.Message}");
+                return StatusCode(500, "Internal server error during file deletion.");
+            }
         }
 
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<FileModel>>> GetFiles()
+        public async Task<ActionResult<IEnumerable<FileModel>>> GetFiles(int pageNumber = 1, int pageSize = 10)
         {
-            var files = await _fileRepository.GetAllFilesAsync();
-            return Ok(files);
+            try
+            {
+                var files = await _fileRepository.GetAllFilesAsync();
+                var totalFiles = files.Count();
+                Console.WriteLine($"Total files in database: {totalFiles}");
+                var pagedFiles = files.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToList();
+                Console.WriteLine($"Requested page {pageNumber} with size {pageSize}, returning {pagedFiles.Count} files");
+                return Ok(pagedFiles);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error retrieving files: {ex.Message}");
+                return StatusCode(500, "Internal server error during file retrieval.");
+            }
         }
     }
 }
