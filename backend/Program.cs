@@ -1,34 +1,44 @@
+using backend.Models;
+using backend.Repositories;
+using backend.Services;
+using backend.Data;
+using backend.Controllers;
 using Microsoft.EntityFrameworkCore;
-using Repositories;
-
+using Microsoft.AspNetCore.Identity;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
 
-// Configure DbContext before building the app
-if (builder.Environment.IsDevelopment())
-{
-    builder.Services.AddDbContext<StudentContext>(options =>
-        options.UseInMemoryDatabase("Student"));
-}
-else
-{
-    builder.Services.AddDbContext<StudentContext>(options =>
-        options.UseSqlServer(builder.Configuration.GetConnectionString("StudentContext") ?? throw new InvalidOperationException("Connection string 'StudentContext' not found.")));
-}
+// Configure DbContext
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    //options.UseSqlerver(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-builder.Services.AddScoped<IStudentRepository, StudentRepository>();
+// Configure Identity
+builder.Services.AddIdentity<User, IdentityRole>(options =>
+{
+    options.User.AllowedUserNameCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    options.User.RequireUniqueEmail = false;
+})
+    .AddEntityFrameworkStores<ApplicationDbContext>()
+    .AddDefaultTokenProviders();
 
+// Configure Repositories
+builder.Services.AddScoped<IFileRepository, FileRepository>();
+
+// Configure JWT Authentication
+builder.Services.AddScoped<IJwtTokenService, JwtTokenService>(); // Implement JwtTokenService
+
+// Configure CORS
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowReactApp",
-        policy =>
-        {
-            policy.WithOrigins("http://localhost:3000")
-                  .AllowAnyHeader()
-                  .AllowAnyMethod();
-        });
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins("http://localhost:3000")
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
 });
 
 builder.Services.AddEndpointsApiExplorer();
@@ -37,7 +47,7 @@ builder.Services.AddSwaggerGen();
 var app = builder.Build();
 
 // Enable CORS
-app.UseCors("AllowReactApp");
+app.UseCors("AllowFrontend");
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -47,7 +57,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
+app.UseAuthentication(); // Add this line
 app.UseAuthorization();
 
 app.MapControllers();
